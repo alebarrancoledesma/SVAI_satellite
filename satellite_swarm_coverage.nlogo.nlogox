@@ -104,7 +104,7 @@ end
 ]]></code>
   <widgets>
     <view x="280" wrappingAllowedX="true" y="30" frameRate="30.0" minPycor="-180" height="724" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="1444" tickCounterLabel="ticks" maxPycor="179" updateMode="0" maxPxcor="359" minPxcor="-360"></view>
-    <slider x="20" step="1" y="85" max="2000" width="250" display="altitude-km" height="50" min="160" direction="Horizontal" default="324.0" variable="altitude-km"></slider>
+    <slider x="20" step="1" y="85" max="2000" width="250" display="altitude-km" height="50" min="160" direction="Horizontal" default="550.0" variable="altitude-km"></slider>
     <slider x="20" step="1" y="30" max="800" width="250" display="num-satellites" height="50" min="0" direction="Horizontal" default="400.0" variable="num-satellites"></slider>
     <slider x="20" step="1" y="140" max="40" width="250" display="omega-deg-per-sec" height="50" min="0" direction="Horizontal" default="10.0" variable="omega-deg-per-sec"></slider>
     <button x="20" y="195" height="36" disableUntilTicks="false" forever="false" kind="Observer" display="Setup" width="250" sizeVersion="0">setup</button>
