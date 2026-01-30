@@ -78,8 +78,11 @@ to-report dist2-km-proj [a b]
 
   let coslat-a ([cos-lat] of a)
 
-  let deltax-km (111.32 * coslat-a * dlon-deg)
-  let deltay-km (111.32 * dlat-deg)
+  ;; --- CAMBIO MÍNIMO: km/deg depende del radio orbital (R_earth + altitude-km) ---
+  let km-per-deg ((6371 + altitude-km) * pi / 180)
+
+  let deltax-km (km-per-deg * coslat-a * dlon-deg)
+  let deltay-km (km-per-deg * dlat-deg)
 
   report (deltax-km * deltax-km + deltay-km * deltay-km)
 end
