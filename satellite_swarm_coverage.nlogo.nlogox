@@ -3,23 +3,45 @@
   <code><![CDATA[globals [
   y-scale
   last-t
-  collisions-count      ;; acumulado (monótono)
-  collisions-tick       ;; parejas en proximidad en este tick
+
+  ;; tiempo simulado (paso fijo)
+  sim-accum
+  sim-time
+
+  ;; total (opcional)
+  collisions-count
+  collisions-tick
+
+  ;; instantáneo por paso (RR y BB)
+  collisions-red-tick
+  collisions-blue-tick
+
+  ;; acumulativo tipo plot1 (RR y BB)
+  collisions-red-count
+  collisions-blue-count
+
 ]
 
 breed [satellites satellite]
 
 patches-own [
   last-seen
-  neigh9               ;; patch-set (self + 8 vecinos) precalculado
+  neigh9
 ]
 
 satellites-own [
   lon
   lat
+  lon0
   incl-deg
-  omega               ;; grados por segundo
+  omega
   phase
+
+  cos-lat
+
+  omega-nom
+  omega-target
+  avoid-active?
 ]
 
 ;; 2 patches = 1 grado en X (world 720x360)
@@ -38,68 +60,161 @@ to-report wrap-lon [lon-deg]
   report l
 end
 
+to-report wrap-360 [a]
+  let x a
+  while [x >= 360] [ set x x - 360 ]
+  while [x <    0] [ set x x + 360 ]
+  report x
+end
+
 to-report clamp-lat [lat-deg]
   report max list -90 (min list 90 lat-deg)
 end
 
-;; Conversión aprox de metros a radio en patches (promedio escala X/Y)
-;; Corrige deformación en X: 1 deg lon = 111.32*cos(lat) km
-;; X: 1 patch = 0.5 deg lon; Y: 1 patch = (90/179) deg lat
-to-report meters->patch-radius-at [meters lat-deg]
-  let km meters / 1000
+;; distancia 2D aproximada en km^2 (proyección equirectangular local)
+to-report dist2-km-proj [a b]
+  let dlat-deg ([lat] of b - [lat] of a)
+  let dlon-deg (wrap-lon ([lon] of b - [lon] of a))
 
-  ;; km por patch en X depende de latitud (cos(lat))
-  let km-per-deg-lon (111.32 * cos lat-deg)
-  let km-per-patch-x (km-per-deg-lon * 0.5)
+  let coslat-a ([cos-lat] of a)
 
-  ;; km por patch en Y constante
-  let km-per-patch-y (111.32 * (90 / 179))
+  let deltax-km (111.32 * coslat-a * dlon-deg)
+  let deltay-km (111.32 * dlat-deg)
 
-  ;; promedio simple como antes
-  let km-per-patch ((km-per-patch-x + km-per-patch-y) / 2)
-
-  ;; ajuste simple por altura: mismo ángulo => más distancia a mayor (R+h)
-  let R 6371
-  let h altitude-km
-  let scale (R / (R + h))     ;; reduce el radio en patches si estás más alto
-
-  report (km / km-per-patch) * scale
+  report (deltax-km * deltax-km + deltay-km * deltay-km)
 end
 
 to update-satellite-state [dt]
   ask satellites [
-    set lon (wrap-lon (lon + omega * dt))
-    set lat (clamp-lat (incl-deg * sin (lon + phase)))
+    set phase (wrap-360 (phase + omega * dt))
+    let u phase
+    let i incl-deg
+
+    set lat (clamp-lat (asin (sin i * sin u)))
+
+    let dlam (atan (cos u) (cos i * sin u))
+    set lon (wrap-lon (lon0 + dlam))
+
+    set cos-lat (cos lat)
     setxy (lon->x lon) (lat->y lat)
   ]
 end
 
-;; Cuenta parejas en proximidad usando índice espacial (satellites-on patches)
+;; Evitación A: "phase kick" permanente (autorregulación)
+;; IMPORTANTE: solo blue-blue
+to update-avoidance
+  let safety-km (safety-radius-m / 1000)
+  let safety2 (safety-km * safety-km)
+
+  let exit-factor 1.3
+  let safety2-exit (safety2 * exit-factor * exit-factor)
+
+  ask satellites with [color = blue] [
+    let candidates (satellites-on [neigh9] of patch-here) with [color = blue and who != [who] of myself]
+    let close candidates with [ (dist2-km-proj myself self) <= safety2 ]
+
+    ifelse any? close [
+      set avoid-active? true
+
+      let nearest min-one-of close [ dist2-km-proj myself self ]
+      let d2 (dist2-km-proj self nearest)
+
+      let strength (1 - (d2 / safety2))
+      if strength < 0 [ set strength 0 ]
+
+      let du (wrap-lon ([phase] of nearest - phase))
+
+      let sgn 0
+      if du > 0 [ set sgn -1 ]
+      if du < 0 [ set sgn  1 ]
+      if abs du < 0.000001 [
+        ifelse [who] of nearest > who [ set sgn 1 ] [ set sgn -1 ]
+      ]
+
+      set phase (wrap-360 (phase + (sgn * phase-kick-deg * strength)))
+
+      set omega omega-nom
+      set omega-target omega-nom
+
+      ;; recalcular posición en este frame
+      let u phase
+      let i incl-deg
+      set lat (clamp-lat (asin (sin i * sin u)))
+      let dlam (atan (cos u) (cos i * sin u))
+      set lon (wrap-lon (lon0 + dlam))
+      set cos-lat (cos lat)
+      setxy (lon->x lon) (lat->y lat)
+
+    ] [
+      if avoid-active? [
+        let still-close? any? candidates with [ (dist2-km-proj myself self) <= safety2-exit ]
+        if not still-close? [ set avoid-active? false ]
+      ]
+
+      if not avoid-active? [
+        set omega omega-nom
+        set omega-target omega-nom
+      ]
+    ]
+  ]
+end
+
+;; Colisiones separadas: red-red y blue-blue (sin red-blue)
+;; "como plot1": acumulativo sumando por paso
 to update-collisions
-  let pairs 0
+  let safety-km (safety-radius-m / 1000)
+  let safety2 (safety-km * safety-km)
 
-  ask satellites [
-    let r meters->patch-radius-at safety-radius-m lat
+  let pairs-red 0
+  let pairs-blue 0
 
-    ;; candidatos = satélites en patch y 8 patches vecinos
-    let candidates (satellites-on [neigh9] of patch-here) with [who > [who] of myself]
-    set pairs pairs + count (candidates in-radius r)
+  ask satellites with [color = red] [
+    let candidates (satellites-on [neigh9] of patch-here) with [color = red and who > [who] of myself]
+    set pairs-red pairs-red + count candidates with [
+      (dist2-km-proj myself self) <= safety2
+    ]
   ]
 
-  set collisions-tick pairs
-  set collisions-count collisions-count + pairs
+  ask satellites with [color = blue] [
+    let candidates (satellites-on [neigh9] of patch-here) with [color = blue and who > [who] of myself]
+    set pairs-blue pairs-blue + count candidates with [
+      (dist2-km-proj myself self) <= safety2
+    ]
+  ]
+
+  set collisions-red-tick pairs-red
+  set collisions-blue-tick pairs-blue
+
+  ;; acumulativos tipo plot1
+  set collisions-red-count collisions-red-count + pairs-red
+  set collisions-blue-count collisions-blue-count + pairs-blue
+
+  ;; total opcional
+  set collisions-tick (pairs-red + pairs-blue)
+  set collisions-count collisions-count + collisions-tick
+end
+
+;; Plots ACUMULATIVOS con X = sim-time
+;; Crea 2 plots en la UI con estos nombres exactos:
+;; "Collisions RED" y "Collisions BLUE"
+;; (y deja vacíos los plot/pen update commands)
+to plot-collisions
+  set-current-plot "Collisions RED"
+  plotxy sim-time collisions-red-count
+
+  set-current-plot "Collisions BLUE"
+  plotxy sim-time collisions-blue-count
 end
 
 to setup
   clear-all
+  clear-all-plots
 
   resize-world -360 359 -180 179
   set-patch-size 2
 
-  ;; escala Y para mapear latitud [-90,90] dentro de y [-179,179]
   set y-scale (179 / 90)
 
-  ;; precalcular vecindario 3x3 por patch (una vez)
   ask patches [
     set neigh9 (patch-set self neighbors)
   ]
@@ -107,20 +222,33 @@ to setup
   clear-drawing
   import-drawing "nasa_earth_720x360.jpg"
 
-  ask patches [
-    set last-seen -1
-  ]
+  ask patches [ set last-seen -1 ]
 
   set collisions-count 0
   set collisions-tick 0
+  set collisions-red-tick 0
+  set collisions-blue-tick 0
+  set collisions-red-count 0
+  set collisions-blue-count 0
 
   create-satellites num-satellites [
     set omega omega-deg-per-sec
+    set omega-nom omega
+    set omega-target omega
+    set avoid-active? false
 
-    set lon (random-float 360 - 180)
+    set lon0 (random-float 360 - 180)
     set incl-deg (20 + random-float 70)
     set phase (random-float 360)
-    set lat (clamp-lat (incl-deg * sin (lon + phase)))
+
+    let u phase
+    let i incl-deg
+
+    set lat (clamp-lat (asin (sin i * sin u)))
+    let dlam (atan (cos u) (cos i * sin u))
+    set lon (wrap-lon (lon0 + dlam))
+
+    set cos-lat (cos lat)
 
     setxy (lon->x lon) (lat->y lat)
     set color red
@@ -128,36 +256,102 @@ to setup
     set shape "circle"
   ]
 
+  ;; clona rojos a azules (idénticos al inicio)
+  let reds satellites with [color = red]
+  ask reds [
+    hatch 1 [
+      set color blue
+      set avoid-active? false
+      set omega omega-nom
+      set omega-target omega-nom
+    ]
+  ]
+
   reset-timer
   set last-t timer
+
+  set sim-accum 0
+  set sim-time 0
+
+  ;; punto inicial t=0: cuenta ANTES de cualquier evitación
+  update-collisions
+  plot-collisions
+
   reset-ticks
 end
 
 to go
   let now timer
-  let dt (now - last-t)
+  let dt-real (now - last-t)
   set last-t now
 
-  update-satellite-state dt
-  update-collisions
+  set sim-accum sim-accum + dt-real * time-x-factor
 
-  tick
+  let dt-step sim-dt-sec
+  let max-steps-per-frame 50
+  let steps 0
+  let did-any-step? false
+
+  while [sim-accum >= dt-step and steps < max-steps-per-frame] [
+    update-satellite-state dt-step
+
+    ;; 1) CUENTA primero (estado actual, antes de corregir)
+    update-collisions
+
+    ;; 2) CORRIGE después (para el siguiente estado/medición)
+    if avoid [ update-avoidance ]
+
+    ;; tiempo simulado y plot
+    set sim-time sim-time + dt-step
+    plot-collisions
+
+    set sim-accum sim-accum - dt-step
+    set steps steps + 1
+    set did-any-step? true
+  ]
+
+  if (sim-accum > 0) [
+    update-satellite-state sim-accum
+
+    update-collisions
+    if avoid [ update-avoidance ]
+
+    set sim-time sim-time + sim-accum
+    plot-collisions
+
+    set sim-accum 0
+    set did-any-step? true
+  ]
+
+  if did-any-step? [ tick ]
 end
 ]]></code>
   <widgets>
     <view x="280" wrappingAllowedX="true" y="30" frameRate="30.0" minPycor="-180" height="724" showTickCounter="true" patchSize="2.0" fontSize="10" wrappingAllowedY="false" width="1444" tickCounterLabel="ticks" maxPycor="179" updateMode="0" maxPxcor="359" minPxcor="-360"></view>
     <slider x="20" step="1" y="85" max="2000" width="250" display="altitude-km" height="50" min="160" direction="Horizontal" default="550.0" variable="altitude-km"></slider>
-    <slider x="20" step="1" y="30" max="6000" width="250" display="num-satellites" height="50" min="0" direction="Horizontal" default="1714.0" variable="num-satellites"></slider>
-    <slider x="20" step="1" y="140" max="40" width="250" display="omega-deg-per-sec" height="50" min="0" direction="Horizontal" default="6.0" variable="omega-deg-per-sec"></slider>
-    <slider x="20" step="1" y="195" max="5000" width="250" display="safety-radius-m" height="50" min="0" direction="Horizontal" default="1786.0" variable="safety-radius-m"></slider>
-    <button x="20" y="250" height="36" disableUntilTicks="false" forever="false" kind="Observer" display="Setup" width="250" sizeVersion="0">setup</button>
-    <button x="20" y="290" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="250" display="Go">Go</button>
-    <plot x="25" autoPlotX="true" yMax="10.0" autoPlotY="true" y="355" xMin="0.0" height="175" legend="false" xMax="10.0" yMin="0.0" width="230" display="plot 1">
+    <slider x="20" step="1" y="30" max="6000" width="250" display="num-satellites" height="50" min="0" direction="Horizontal" default="1200.0" variable="num-satellites"></slider>
+    <slider x="20" step="0.0001" y="140" max="0.08" width="250" display="omega-deg-per-sec" height="50" min="0.04" direction="Horizontal" default="0.0464" variable="omega-deg-per-sec"></slider>
+    <slider x="20" step="1" y="195" max="5000" width="250" display="safety-radius-m" height="50" min="0" direction="Horizontal" default="1964.0" variable="safety-radius-m"></slider>
+    <slider x="20" step="1" y="250" max="1000" width="250" display="time-x-factor" height="50" min="1" direction="Horizontal" default="600.0" variable="time-x-factor"></slider>
+    <slider x="20" step="1" y="305" max="20" width="250" display="sim-dt-sec" height="50" min="1" direction="Horizontal" default="17.0" variable="sim-dt-sec"></slider>
+    <button x="20" y="360" height="33" disableUntilTicks="false" forever="false" kind="Observer" display="Setup" width="250" sizeVersion="0">setup</button>
+    <button x="20" y="400" height="35" disableUntilTicks="false" forever="true" kind="Observer" width="250" display="Go">Go</button>
+    <slider x="20" step="0.01" y="440" max="0.5" width="175" display="phase-kick-deg" height="50" min="0" direction="Horizontal" default="0.2" variable="phase-kick-deg"></slider>
+    <switch x="200" y="440" height="50" on="true" variable="avoid" width="70" display="avoid"></switch>
+    <plot x="15" autoPlotX="true" yMax="10.0" autoPlotY="true" y="495" xMin="0.0" height="125" legend="false" xMax="10.0" yMin="0.0" width="255" display="Collisions RED">
       <setup></setup>
       <update></update>
-      <pen interval="1.0" mode="0" display="default" color="-16777216" legend="true">
+      <pen interval="1.0" mode="0" display="pen-0" color="-7500403" legend="true">
         <setup></setup>
-        <update>plot collisions-count</update>
+        <update></update>
+      </pen>
+    </plot>
+    <plot x="15" autoPlotX="true" yMax="10.0" autoPlotY="true" y="625" xMin="0.0" height="125" legend="false" xMax="10.0" yMin="0.0" width="255" display="Collisions BLUE">
+      <setup></setup>
+      <update></update>
+      <pen interval="1.0" mode="0" display="pen-0" color="-7500403" legend="true">
+        <setup></setup>
+        <update></update>
       </pen>
     </plot>
   </widgets>
