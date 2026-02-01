@@ -1,0 +1,41 @@
+001
+num-satellites: 1200
+altitude-km: 550
+omega-deg-per-sec: 0.04
+safety-radius-m: 2000
+time-x-factor: 200
+sim-dt-sec: 0.5
+phase-kick-deg: 0.02
+
+---
+
+002
+num-satellites: 2400
+altitude-km: 550
+omega-deg-per-sec: 0.04
+safety-radius-m: 2000
+time-x-factor: 200
+sim-dt-sec: 0.5
+phase-kick-deg: 0.02
+
+---
+
+003
+num-satellites: 4800
+altitude-km: 550
+omega-deg-per-sec: 0.04
+safety-radius-m: 2000
+time-x-factor: 200
+sim-dt-sec: 0.5
+phase-kick-deg: 0.02
+
+---
+
+004
+num-satellites: 4800
+altitude-km: 550
+omega-deg-per-sec: 0.04
+safety-radius-m: 20000
+time-x-factor: 200
+sim-dt-sec: 0.5
+phase-kick-deg: 0.02
