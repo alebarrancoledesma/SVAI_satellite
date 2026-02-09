@@ -3,6 +3,8 @@
 
 **Autor: Alejandro Barranco Ledesma**
 
+<img src="./data/004.png"/>
+
 ---
 
 Simulación multiagente en NetLogo de una constelación LEO donde cada satélite, usando solo información local, aplica reglas simples de evitación por proximidad (phase-kick) para estudiar si emerge una coordinación global estable que reduzca conflictos frente a un baseline sin control.
