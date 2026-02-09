@@ -15,5 +15,6 @@ Simulación multiagente en NetLogo de una constelación LEO donde cada satélite
 
 Este proyecto se ejecuta mediante **Netlogo**. Para comenzar:
 
-1. Abre el archivo svai_satellite.nlogo.nlogox
-2. Lee la memoria (MEMORIA.pdf) para detalles de implementación
+1. Instala Netlogo (https://www.netlogo.org/)
+1. Abre el archivo svai_satellite.nlogo.nlogox usando Netlogo
+2. Lee la memoria (MEMORIA.pdf) para instrucciones de uso y detalles de implementación
